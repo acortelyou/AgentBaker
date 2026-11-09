@@ -56,6 +56,7 @@ e2e/scenario-logs/
 
 # vhdbuilder generated prefetch scripts
 vhdbuilder/packer/prefetch.sh
+vhdbuilder/packer/boot-trace.generated.json
 
 # default `go build` output inside the COSI uploader module; packer.mk builds into bin/
 vhdbuilder/cosi-uploader/cosi-uploader
