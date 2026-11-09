@@ -961,9 +961,7 @@ reconcileSSHPolicy() {
             local pubkey_auth
             pubkey_auth=$(cat "$policy_dir/pubkey-auth") || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
             configureSSHPubkeyAuth "$pubkey_auth" || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
-            if [ -f "$policy_dir/disabled" ]; then
-                restoreSSH || return "$ERR_DISABLE_SSH"
-            fi
+            restoreSSH || return "$ERR_DISABLE_SSH"
             reloadSSHAuthentication || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
             rm -f "$policy_dir/pubkey-auth" || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
         else
@@ -1097,9 +1095,7 @@ disableSSHPubkeyAuth() {
     printf '%s\n' "$original" > "$policy_dir/pubkey-auth" || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
   fi
   configureSSHPubkeyAuth no || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
-  if [ -f "$policy_dir/disabled" ]; then
-    restoreSSH || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
-  fi
+  restoreSSH || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
   reloadSSHAuthentication || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
 }
 

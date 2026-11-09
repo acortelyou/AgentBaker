@@ -662,6 +662,8 @@ disable sshd"
             cat "${SSHD_CONFIG_FILE}"
         }
 
+        restoreSSH() { return 0; }
+
         BeforeEach 'setup'
         AfterEach 'cleanup'
 
@@ -994,6 +996,48 @@ Match User entra
             The status should be success
             The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
             The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal enabled
+        End
+
+        Describe 'legacy authentication reconciliation without a disable marker'
+            Parameters
+                true no 178
+                false yes 172
+            End
+
+            prepare_legacy_auth() {
+                DISABLE_SSH=false
+                DISABLE_PUBKEY_AUTH="$1"
+                SHOULD_RESTORE_SSH=true
+                EXPECTED_PUBKEY="$2"
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                if [ "$DISABLE_PUBKEY_AUTH" = false ]; then
+                    mkdir -p "$SSH_POLICY_DIR"
+                    printf yes > "$SSH_POLICY_DIR/pubkey-auth"
+                    printf 'PubkeyAuthentication no\n' > "$SSHD_CONFIG_FILE"
+                fi
+            }
+
+            It "enables boot activation after validating PubkeyAuthentication=$2"
+                prepare_legacy_auth "$1" "$2"
+                When call reconcileSSHPolicy
+                The status should be success
+                The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
+                The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal enabled
+                The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication $2"
+                The file "$SSH_POLICY_DIR/disabled" should not be exist
+            End
+
+            It "preserves an external service mask with PubkeyAuthentication=$2"
+                prepare_legacy_auth "$1" "$2"
+                printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
+                When run reconcileSSHPolicy
+                The status should equal "$3"
+                The stderr should include "external masks are not removed"
+                The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+                The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
+                The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
+            End
         End
 
         It 'deduplicates Ubuntu aliases when selecting the legacy service'
