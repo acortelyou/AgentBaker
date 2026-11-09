@@ -23,11 +23,11 @@ import (
 
 func TestBuildCSECmdSSHPolicy(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		enable  *bool
+		name      string
+		enable    *bool
 		pubkeyOff bool
-		disable string
-		restore string
+		disable   string
+		restore   string
 	}{
 		{name: "unspecified", disable: "false", restore: "false"},
 		{name: "disabled", enable: proto.Bool(false), disable: "true", restore: "false"},
