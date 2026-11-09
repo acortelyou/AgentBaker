@@ -393,9 +393,21 @@ $cpu_pressure_commands"
         BeforeEach setup_ssh_telemetry
         AfterEach cleanup_ssh_telemetry
 
+        installSSHDisablePolicy() { :; }
+
         systemctl() {
             case "$1" in
                 daemon-reload) return 0 ;;
+                show)
+                    if [ "$3" = --property=ActiveState ]; then
+                        echo inactive
+                    else
+                        case " ${MISSING_UNITS:-} " in
+                            *" $2 "*) echo not-found ;;
+                            *) echo loaded ;;
+                        esac
+                    fi
+                    ;;
                 cat)
                     # MISSING_UNITS simulates a distro where the unit isn't installed.
                     case " ${MISSING_UNITS:-} " in
@@ -422,7 +434,9 @@ $cpu_pressure_commands"
 
         It 'stops and disables every SSH unit that is present'
             When call disableSSH
-            The output should equal "stop sshd.socket
+            The output should equal "stop ssh.socket
+disable ssh.socket
+stop sshd.socket
 disable sshd.socket
 stop ssh
 disable ssh
@@ -430,7 +444,7 @@ stop sshd
 disable sshd"
             The status should be success
             SSH_EVENT_FILTER='
-                length == 8 and
+                length == 10 and
                 ([.[].Message | fromjson | .AttemptId] | unique | length == 1) and
                 all(.[]; (.Message | type) == "string" and .EventLevel == "Informational") and
                 ([.[] | select(.TaskName == "AKS.CSE.disableSSH") | .Message | fromjson |
@@ -438,12 +452,12 @@ disable sshd"
                                         length == 1 and .[0].ExitCode == 0) and
                 ([.[] | select(.TaskName == "AKS.CSE.disableSSH.unit") | .Message | fromjson |
                   select(.Phase == "Completed")] |
-                    length == 3 and all(.[];
+                    length == 4 and all(.[];
                         .CatExitCode == 0 and .StopExitCode == 0 and .DisableExitCode == 0 and
                         .Skipped == false and .SchemaVersion == 1)) and
                     all(.[]; (.Timestamp | length) > 0 and (.OperationId | length) > 0) and
                 ([.[].Message | fromjson | select(.Phase == "Started")] |
-                    length == 4 and all(.[]; .ExitCode == null))
+                    length == 5 and all(.[]; .ExitCode == null))
             '
             The result of function ssh_events_match should equal true
         End
@@ -451,7 +465,9 @@ disable sshd"
         It 'skips units that are not installed'
             MISSING_UNITS="ssh sshd"
             When call disableSSH
-            The output should equal "stop sshd.socket
+            The output should equal "stop ssh.socket
+disable ssh.socket
+stop sshd.socket
 disable sshd.socket"
             The status should be success
             SSH_EVENT_FILTER='
@@ -463,7 +479,7 @@ disable sshd.socket"
         End
 
         It 'skips sshd.socket on distros without socket activation'
-            MISSING_UNITS="ssh sshd.socket"
+            MISSING_UNITS="ssh ssh.socket sshd.socket"
             When call disableSSH
             The output should equal "stop sshd
 disable sshd"
@@ -506,7 +522,7 @@ disable sshd"
             The output should include "disable sshd.socket"
             SSH_EVENT_FILTER='
                 [.[].Message | fromjson | select(.Phase == "Completed" and .Unit != "") | keys] |
-                length == 3 and all(.[]; . ==
+                length == 4 and all(.[]; . ==
                     ["AttemptId", "CatExitCode", "DisableExitCode", "ExitCode", "Phase",
                      "SchemaVersion", "Skipped", "StopExitCode", "Unit"])
             '
@@ -522,7 +538,7 @@ disable sshd"
             The status should be success
             The output should include "disable sshd.socket"
             SSH_EVENT_FILTER='
-                length == 16 and ([.[].Message | fromjson | .AttemptId] | unique | length == 2)
+                length == 20 and ([.[].Message | fromjson | .AttemptId] | unique | length == 2)
             '
             The result of function ssh_events_match should equal true
         End
@@ -545,7 +561,7 @@ disable sshd"
             The output should include "disable sshd.socket"
             The stderr should equal ""
             The file "$TEST_EVENTS_ROOT/cleaned" should be exist
-            SSH_EVENT_FILTER='length == 8 and all(.[]; (.Message | fromjson | .SchemaVersion) == 1)'
+            SSH_EVENT_FILTER='length == 10 and all(.[]; (.Message | fromjson | .SchemaVersion) == 1)'
             The result of function ssh_events_match should equal true
             The result of function remaining_staging_files should equal ""
         End
@@ -594,12 +610,17 @@ disable sshd"
     Describe 'disableSSHPubkeyAuth'
         setup() {
             SSHD_CONFIG_FILE="$(mktemp)"
+            SSH_POLICY_DIR="$(mktemp -d)"
             SSH_SERVICE_ACTIVE="true"
             SSH_SERVICE_EXISTS="true"
+            DISABLE_SSH=false
+            DISABLE_PUBKEY_AUTH=false
+            SHOULD_RESTORE_SSH=false
         }
 
         cleanup() {
             rm -f "${SSHD_CONFIG_FILE}"
+            rm -rf "${SSH_POLICY_DIR}"
             unset SSHD_CONFIG_FILE
             unset SSH_SERVICE_ACTIVE
             unset SSH_SERVICE_EXISTS
@@ -610,18 +631,26 @@ disable sshd"
             if [ "$1" = "cat" ] && [ "${SSH_SERVICE_EXISTS}" != "true" ]; then
                 return 1
             fi
-            if [ "$1" = "is-active" ] && [ "${SSH_SERVICE_ACTIVE}" != "true" ]; then
-                return 3
+            if [ "$1" = "is-active" ]; then
+                case "$3" in
+                    *.socket) return 3 ;;
+                esac
+                [ "${SSH_SERVICE_ACTIVE}" = "true" ] || return 3
             fi
             return 0
         }
 
         sshd() {
             echo "sshd $*" >&2
+            if [ "$1" = -T ]; then
+                awk 'BEGIN { value="yes" } /^Match/ { exit } /^PubkeyAuthentication / { value=$2 }
+                    END { print "pubkeyauthentication " value }' "$3"
+            fi
             return 0
         }
 
         install() {
+            [ "$1" != -d ] || return 0
             while [ "$#" -gt 2 ]; do
                 shift
             done
@@ -710,6 +739,502 @@ PubkeyAuthentication no"
             The output should equal "PasswordAuthentication no
 PubkeyAuthentication no"
             The stderr should include "systemctl start sshd.service"
+        End
+
+        It 'does not start SSH when candidate validation fails'
+            echo "PubkeyAuthentication yes" > "${SSHD_CONFIG_FILE}"
+            SSH_SERVICE_ACTIVE=false
+            sshd() {
+                if [ "$1" = -T ]; then
+                    echo "pubkeyauthentication yes"
+                    return 0
+                fi
+                return 1
+            }
+            When run disableSSHPubkeyAuth
+            The status should equal 178
+            The contents of file "${SSHD_CONFIG_FILE}" should equal "PubkeyAuthentication yes"
+            The stderr should not include "systemctl start"
+        End
+
+        It 'installs the restrictive config before starting SSH'
+            echo "PubkeyAuthentication yes" > "${SSHD_CONFIG_FILE}"
+            SSH_SERVICE_ACTIVE=false
+            systemctl() {
+                case "$1" in
+                    cat) return 0 ;;
+                    is-active) return 3 ;;
+                    start) grep -qx 'PubkeyAuthentication no' "${SSHD_CONFIG_FILE}" ;;
+                    reload-or-restart) return 0 ;;
+                    *) return 1 ;;
+                esac
+            }
+            When call disableSSHPubkeyAuth
+            The status should be success
+            The stderr should include "sshd -t -f"
+        End
+
+        It 'restores only the owned global authentication setting and reloads the running server'
+            cat > "${SSHD_CONFIG_FILE}" <<'EOF'
+PubkeyAuthentication yes
+Match User entra
+  PubkeyAuthentication yes
+EOF
+            disable_then_restore_auth() {
+                disableSSHPubkeyAuth
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "${SSHD_CONFIG_FILE}"
+            }
+            When call disable_then_restore_auth
+            The status should be success
+            The output should equal "PubkeyAuthentication yes
+Match User entra
+  PubkeyAuthentication yes"
+            The stderr should include "systemctl reload-or-restart ssh.service"
+            The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
+        End
+
+        It 'does not activate SSH when installing the authentication config fails'
+            echo "PubkeyAuthentication yes" > "${SSHD_CONFIG_FILE}"
+            SSH_SERVICE_ACTIVE=false
+            install() { [ "$1" = -d ]; }
+            When run disableSSHPubkeyAuth
+            The status should equal 178
+            The contents of file "${SSHD_CONFIG_FILE}" should equal "PubkeyAuthentication yes"
+            The stderr should include "sshd -t -f"
+            The stderr should not include "systemctl start"
+        End
+
+        It 'does not reopen SSH when an Include overrides the requested authentication policy'
+            echo "Include /etc/ssh/sshd_config.d/*.conf" > "$SSHD_CONFIG_FILE"
+            SSH_SERVICE_ACTIVE=false
+            sshd() {
+                [ "$1" != -T ] || echo 'pubkeyauthentication yes'
+                return 0
+            }
+            When run disableSSHPubkeyAuth
+            The status should equal 178
+            The stderr should include "does not enforce the requested public-key policy"
+            The stderr should not include "systemctl start"
+            The contents of file "$SSHD_CONFIG_FILE" should equal "Include /etc/ssh/sshd_config.d/*.conf"
+        End
+    End
+    Describe 'persistent SSH access policy'
+        Include "./parts/linux/cloud-init/artifacts/cse_config.sh"
+
+        setup_ssh_policy() {
+            SSH_TEST_ROOT=$(mktemp -d)
+            SSH_POLICY_DIR="$SSH_TEST_ROOT/policy"
+            SSH_SYSTEMD_UNIT_DIR="$SSH_TEST_ROOT/systemd"
+            SSH_MODEL_DIR="$SSH_TEST_ROOT/model"
+            EVENTS_LOGGING_DIR="$SSH_TEST_ROOT/events"
+            mkdir -p "$SSH_MODEL_DIR" "$EVENTS_LOGGING_DIR"
+            SSH_MODEL_OS=azurelinux
+            FAIL_COMMAND=""
+            DISABLE_SSH=true
+            DISABLE_PUBKEY_AUTH=false
+            SHOULD_RESTORE_SSH=false
+            EXPECTED_PUBKEY=""
+            SSHD_CONFIG_FILE="$SSH_TEST_ROOT/sshd_config"
+            printf 'PubkeyAuthentication yes\nMatch User entra\n  PubkeyAuthentication yes\n' > "$SSHD_CONFIG_FILE"
+            local unit
+            for unit in ssh.socket sshd.socket ssh.service sshd.service; do
+                printf not-found > "$SSH_MODEL_DIR/$unit.LoadState"
+                printf disabled > "$SSH_MODEL_DIR/$unit.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/$unit.ActiveState"
+                printf '%s' "$unit" > "$SSH_MODEL_DIR/$unit.Id"
+            done
+            printf loaded > "$SSH_MODEL_DIR/sshd.service.LoadState"
+            printf enabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+            printf active > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+        }
+
+        cleanup_ssh_policy() { rm -rf "$SSH_TEST_ROOT"; }
+        BeforeEach setup_ssh_policy
+        AfterEach cleanup_ssh_policy
+
+        ssh_model_unit() {
+            local unit="$1"
+            case "$unit" in ssh|sshd) unit="$unit.service" ;; esac
+            if [ "$SSH_MODEL_OS" = ubuntu ] && [ "$unit" = sshd.service ]; then
+                unit=ssh.service
+            fi
+            printf '%s' "$unit"
+        }
+
+        systemctl() {
+            local action="$1" unit property
+            printf '%s\n' "$*" >> "$SSH_TEST_ROOT/commands"
+            [ "$*" != "$FAIL_COMMAND" ] || return 1
+            [ "$action" != daemon-reload ] || return 0
+            if [ "$action" = is-active ]; then
+                unit=$(ssh_model_unit "$3")
+                [ "$(cat "$SSH_MODEL_DIR/$unit.ActiveState")" = active ]
+                return
+            fi
+            unit=$(ssh_model_unit "$2")
+            case "$action" in
+                show)
+                    property="${3#--property=}"
+                    cat "$SSH_MODEL_DIR/$unit.$property"
+                    ;;
+                cat) [ "$(cat "$SSH_MODEL_DIR/$unit.LoadState")" = loaded ] ;;
+                stop) printf inactive > "$SSH_MODEL_DIR/$unit.ActiveState" ;;
+                disable) printf disabled > "$SSH_MODEL_DIR/$unit.UnitFileState" ;;
+                enable) printf enabled > "$SSH_MODEL_DIR/$unit.UnitFileState" ;;
+                start)
+                    [ "$(cat "$SSH_MODEL_DIR/$unit.LoadState")" = loaded ] || return 1
+                    if [ -f "$SSH_POLICY_DIR/disabled" ] &&
+                        grep -qx "ConditionPathExists=!$SSH_POLICY_DIR/disabled" \
+                            "$SSH_SYSTEMD_UNIT_DIR/$unit.d/90-aks-ssh-access.conf"; then
+                        return 0
+                    fi
+                    if [ -n "$EXPECTED_PUBKEY" ]; then
+                        grep -qx "PubkeyAuthentication $EXPECTED_PUBKEY" "$SSHD_CONFIG_FILE" || return 1
+                    fi
+                    printf active > "$SSH_MODEL_DIR/$unit.ActiveState"
+                    ;;
+                unmask) printf loaded > "$SSH_MODEL_DIR/$unit.LoadState" ;;
+                reload-or-restart) return 0 ;;
+                *) return 1 ;;
+            esac
+        }
+
+        timeout() { shift; "$@"; }
+        sleep() { :; }
+        sshd() {
+            if [ "$1" = -T ]; then
+                awk 'BEGIN { value="yes" } /^Match/ { exit } /^PubkeyAuthentication / { value=$2 }
+                    END { print "pubkeyauthentication " value }' "$3"
+            fi
+        }
+        install() {
+            [ "$1" != -d ] || return 0
+            while [ "$#" -gt 2 ]; do shift; done
+            command cp "$1" "$2"
+        }
+        run_node_prep_ssh_reconciliation() {
+            sed -n '/^function nodePrep {/,/^}/p' \
+                parts/linux/cloud-init/artifacts/cse_main.sh > "$SSH_TEST_ROOT/node-prep.sh"
+            # Load the actual entry point without executing CSE's top-level setup.
+            . "$SSH_TEST_ROOT/node-prep.sh"
+            nodePrep
+        }
+
+        It 'blocks a dependency start even after a package unmask'
+            disable_and_unmask() {
+                disableSSH
+                systemctl unmask sshd.service
+                systemctl start sshd.service
+                cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
+            }
+            When call disable_and_unmask
+            The status should be success
+            The output should equal inactive
+        End
+
+        It 'does not lose the original activation mode on repeated disable'
+            disable_twice_and_restore() {
+                disableSSH
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+            }
+            When call disable_twice_and_restore
+            The status should be success
+            The output should equal activeenabled
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+        End
+
+        It 'can restore a unique endpoint disabled by legacy CSE without inventing boot links'
+            restore_legacy_disabled() {
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+            }
+            When call restore_legacy_disabled
+            The status should be success
+            The output should equal activedisabled
+        End
+
+        It 'explicitly enables the unique legacy service when both endpoints are disabled'
+            restore_ambiguous_legacy() {
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                cat "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
+            }
+            When call restore_ambiguous_legacy
+            The status should be success
+            The output should equal activeenableddisabled
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+        End
+
+        It 'explicitly enables a legacy service without a previously installed policy'
+            DISABLE_SSH=false
+            SHOULD_RESTORE_SSH=true
+            printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+            printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+            When call reconcileSSHPolicy
+            The status should be success
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
+            The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal enabled
+        End
+
+        It 'deduplicates Ubuntu aliases when selecting the legacy service'
+            restore_legacy_ubuntu() {
+                SSH_MODEL_OS=ubuntu
+                printf loaded > "$SSH_MODEL_DIR/ssh.service.LoadState"
+                printf loaded > "$SSH_MODEL_DIR/ssh.socket.LoadState"
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/ssh.service.ActiveState"
+                cat "$SSH_MODEL_DIR/ssh.service.UnitFileState"
+                cat "$SSH_MODEL_DIR/ssh.socket.UnitFileState"
+            }
+            When call restore_legacy_ubuntu
+            The status should be success
+            The output should equal activeenableddisabled
+        End
+
+        It 'refuses a legacy restore with multiple distinct services'
+            restore_distinct_legacy_services() {
+                printf loaded > "$SSH_MODEL_DIR/ssh.service.LoadState"
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+            }
+            When call restore_distinct_legacy_services
+            The status should equal 172
+            The stderr should include "multiple distinct services"
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+        End
+
+        It 'does not bypass an external service mask in the legacy fallback'
+            restore_masked_legacy_service() {
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
+                disableSSH
+                printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+            }
+            When call restore_masked_legacy_service
+            The status should equal 172
+            The stderr should include "external masks are not removed"
+            The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+        End
+
+        It 'keeps SSH blocked when the enabled policy is unspecified'
+            disable_then_unspecified() {
+                disableSSH
+                DISABLE_SSH=false
+                reconcileSSHPolicy
+                systemctl start sshd.service
+                cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
+            }
+            When call disable_then_unspecified
+            The status should be success
+            The output should equal inactive
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+        End
+
+        It 'stops an already running masked service without removing its mask'
+            printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
+            When call disableSSH
+            The status should be success
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+            The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
+        End
+
+        It 'reports an external mask conflict without reopening SSH'
+            restore_externally_masked() {
+                disableSSH
+                printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+            }
+            When call restore_externally_masked
+            The status should equal 172
+            The stderr should include "external masks are not removed"
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
+        End
+
+        It 'preserves an administrator drop-in and fails provisioning'
+            mkdir -p "$SSH_SYSTEMD_UNIT_DIR/sshd.service.d"
+            echo '[Unit]' > "$SSH_SYSTEMD_UNIT_DIR/sshd.service.d/90-aks-ssh-access.conf"
+            When run disableSSH
+            The status should equal 172
+            The stderr should include "Refusing to overwrite"
+            The contents of file "$SSH_SYSTEMD_UNIT_DIR/sshd.service.d/90-aks-ssh-access.conf" should equal '[Unit]'
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+        End
+
+        It 'does not silently accept an external mask without an owned policy'
+            DISABLE_SSH=false
+            SHOULD_RESTORE_SSH=true
+            printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
+            When call reconcileSSHPolicy
+            The status should equal 172
+            The stderr should include "external masks are not removed"
+            The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+        End
+
+        It 'does not release a disable marker when its ownership record is missing'
+            restore_with_missing_record() {
+                disableSSH
+                rm "$SSH_POLICY_DIR/activation"
+                printf enabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+            }
+            When call restore_with_missing_record
+            The status should equal 172
+            The stderr should include "owned activation record is missing"
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+        End
+
+        It 'fails provisioning when the persistent policy cannot be loaded'
+            FAIL_COMMAND=daemon-reload
+            When run disableSSH
+            The status should equal 172
+            The stderr should include "Failed to install persistent SSH disable policy"
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+        End
+
+        It 'restores socket activation from a disabled PIS cache without enabling its service'
+            restore_ubuntu_socket() {
+                SSH_MODEL_OS=ubuntu
+                printf loaded > "$SSH_MODEL_DIR/ssh.service.LoadState"
+                printf loaded > "$SSH_MODEL_DIR/ssh.socket.LoadState"
+                printf enabled > "$SSH_MODEL_DIR/ssh.socket.UnitFileState"
+                printf active > "$SSH_MODEL_DIR/ssh.socket.ActiveState"
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/ssh.socket.ActiveState"
+                cat "$SSH_MODEL_DIR/ssh.service.UnitFileState"
+            }
+            When call restore_ubuntu_socket
+            The status should be success
+            The output should equal activedisabled
+        End
+
+        It 'respects a package migration to a newly installed socket'
+            restore_migrated_socket() {
+                disableSSH
+                printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
+                printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
+                systemctl start sshd.socket
+                [ "$(cat "$SSH_MODEL_DIR/sshd.socket.ActiveState")" = inactive ] || return 1
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/sshd.socket.ActiveState"
+                cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+            }
+            When call restore_migrated_socket
+            The status should be success
+            The output should equal activedisabled
+        End
+
+        It 'reinstates the persistent block if activation fails'
+            fail_restore() {
+                disableSSH
+                FAIL_COMMAND="start sshd.service"
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+            }
+            When call fail_restore
+            The status should equal 172
+            The stderr should include "Failed to restore SSH activation"
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+        End
+
+        It 'configures Entra authentication before restoring a disabled service'
+            restore_entra_auth() {
+                disableSSH
+                DISABLE_SSH=false
+                DISABLE_PUBKEY_AUTH=true
+                EXPECTED_PUBKEY=no
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
+            }
+            When call restore_entra_auth
+            The status should be success
+            The output should equal active
+            The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication no"
+            The contents of file "$SSHD_CONFIG_FILE" should include "  PubkeyAuthentication yes"
+        End
+
+        It 'gives SSH Disabled precedence over the authentication request'
+            DISABLE_PUBKEY_AUTH=true
+            When call reconcileSSHPolicy
+            The status should be success
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+            The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+        End
+
+        It 'enforces Disabled at nodePrep even when basePrep was cached as enabled'
+            logs_to_events() {
+                [ "$2" = reconcileSSHPolicy ] || exit 1
+                "$2"
+                exit "$?"
+            }
+            When run run_node_prep_ssh_reconciliation
+            The status should be success
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+        End
+
+        It 'restores explicitly enabled SSH at nodePrep from a disabled cache'
+            prepare_disabled_cache() {
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                run_node_prep_ssh_reconciliation
+            }
+            logs_to_events() {
+                [ "$2" = reconcileSSHPolicy ] || exit 1
+                "$2"
+                exit "$?"
+            }
+            When run prepare_disabled_cache
+            The status should be success
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
         End
     End
     Describe 'configureAzureJson'

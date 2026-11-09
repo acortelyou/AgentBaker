@@ -112,6 +112,7 @@ func getCSEEnv(ctx context.Context, config *aksnodeconfigv1.Configuration, gpuCo
 		"RUNC_PACKAGE_URL":                                     config.GetRuncConfig().GetRuncPackageUrl(),
 		"ENABLE_HOSTS_CONFIG_AGENT":                            fmt.Sprintf("%v", config.GetEnableHostsConfigAgent()),
 		"DISABLE_SSH":                                          fmt.Sprintf("%v", getDisableSSH(config)),
+		"SHOULD_RESTORE_SSH":                                   fmt.Sprintf("%v", !getDisableSSH(config) && (config.GetEnableSsh() || config.GetDisablePubkeyAuth())),
 		"SHOULD_CONFIGURE_HTTP_PROXY":                          fmt.Sprintf("%v", getShouldConfigureHTTPProxy(config.GetHttpProxyConfig())),
 		"SHOULD_CONFIGURE_HTTP_PROXY_CA":                       fmt.Sprintf("%v", getShouldConfigureHTTPProxyCA(config.GetHttpProxyConfig())),
 		"HTTP_PROXY_TRUSTED_CA":                                removeNewlines(config.GetHttpProxyConfig().GetProxyTrustedCa()),
