@@ -80,10 +80,11 @@ Describe 'cse_main.sh PIS-safe configuration'
             The line 2 of output should equal "1"
         End
 
-        It 'writes azure.json and ca.crt before other nodePrep event calls'
+        It 'reconciles SSH first, then writes azure.json and ca.crt before other nodePrep event calls'
             When call node_prep_event_calls
-            The line 1 of output should equal "configureAzureJson"
-            The line 2 of output should equal "ensureKubeCACert"
+            The line 1 of output should equal "reconcileSSHPolicy"
+            The line 2 of output should equal "configureAzureJson"
+            The line 3 of output should equal "ensureKubeCACert"
         End
 
         It 'writes azure.json before secure TLS bootstrap consumes it'
