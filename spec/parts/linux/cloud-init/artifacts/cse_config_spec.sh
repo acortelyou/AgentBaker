@@ -1136,26 +1136,75 @@ PubkeyAuthentication no"
             The contents of file "$SSH_TEST_ROOT/commands" should not include "reload-or-restart"
         End
 
-        It 'restores an owned Entra socket without restarting its inactive service'
-            restore_entra_socket() {
-                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
-                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+        Describe 'repeated socket-only Entra reconciliation'
+            Parameters
+                azurelinux sshd.service sshd.socket
+                ubuntu ssh.service ssh.socket
+            End
+
+            It "preserves socket activation on $1 after removing its owned block"
+                SSH_MODEL_OS="$1"
+                ssh_service="$2"
+                ssh_socket="$3"
+                install() {
+                    if [ "$1" = -d ]; then
+                        printf '%s\n' "$*" > "$SSH_TEST_ROOT/validation-directory"
+                        return 0
+                    fi
+                    while [ "$#" -gt 2 ]; do shift; done
+                    command cp "$1" "$2"
+                }
+                sshd() {
+                    [ -f "$SSH_TEST_ROOT/validation-directory" ] || return 1
+                    if [ "$1" = -T ]; then
+                        printf 'pubkeyauthentication no\n'
+                    fi
+                }
+                restore_entra_socket_twice() {
+                    printf loaded > "$SSH_MODEL_DIR/$ssh_service.LoadState"
+                    printf disabled > "$SSH_MODEL_DIR/$ssh_service.UnitFileState"
+                    printf inactive > "$SSH_MODEL_DIR/$ssh_service.ActiveState"
+                    printf loaded > "$SSH_MODEL_DIR/$ssh_socket.LoadState"
+                    printf enabled > "$SSH_MODEL_DIR/$ssh_socket.UnitFileState"
+                    printf active > "$SSH_MODEL_DIR/$ssh_socket.ActiveState"
+                    disableSSH
+                    DISABLE_SSH=false
+                    DISABLE_PUBKEY_AUTH=true
+                    EXPECTED_PUBKEY=no
+                    reconcileSSHPolicy
+                    [ ! -f "$SSH_POLICY_DIR/disabled" ] || return 1
+                    rm -f "$SSH_TEST_ROOT/validation-directory"
+                    reconcileSSHPolicy
+                }
+                When run restore_entra_socket_twice
+                The status should be success
+                The file "$SSH_POLICY_DIR/disabled" should not be exist
+                The contents of file "$SSH_MODEL_DIR/$ssh_socket.ActiveState" should equal active
+                The contents of file "$SSH_MODEL_DIR/$ssh_socket.UnitFileState" should equal enabled
+                The contents of file "$SSH_MODEL_DIR/$ssh_service.ActiveState" should equal inactive
+                The contents of file "$SSH_MODEL_DIR/$ssh_service.UnitFileState" should equal disabled
+                The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication no"
+                The contents of file "$SSH_TEST_ROOT/validation-directory" should equal "-d -m 0755 -o root -g root /run/sshd"
+                The contents of file "$SSH_TEST_ROOT/commands" should not include "start $ssh_service"
+                The contents of file "$SSH_TEST_ROOT/commands" should not include "reload-or-restart"
+            End
+        End
+
+        It 'reloads an active Entra service even when its socket is active'
+            configure_active_entra_service() {
                 printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
-                printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
                 printf active > "$SSH_MODEL_DIR/sshd.socket.ActiveState"
-                disableSSH
                 DISABLE_SSH=false
                 DISABLE_PUBKEY_AUTH=true
-                EXPECTED_PUBKEY=no
                 reconcileSSHPolicy
             }
-            When call restore_entra_socket
+            When call configure_active_entra_service
             The status should be success
-            The file "$SSH_POLICY_DIR/disabled" should not be exist
             The contents of file "$SSH_MODEL_DIR/sshd.socket.ActiveState" should equal active
-            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
-            The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
-            The contents of file "$SSH_TEST_ROOT/commands" should not include "reload-or-restart"
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
+            The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication no"
+            The contents of file "$SSH_TEST_ROOT/commands" should include "reload-or-restart sshd.service"
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
         End
 
         Describe 'owned Entra activation failures'

@@ -1040,12 +1040,8 @@ disableSSHPubkeyAuth() {
   if systemctl cat ssh.service >/dev/null 2>&1; then
     ssh_service="ssh.service"
   fi
-  if [ -f "$policy_dir/disabled" ]; then
-    # The owned condition blocks startup, so recreate Ubuntu's validation directory.
-    install -d -m 0755 -o root -g root /run/sshd || { rm -f "$TMP"; exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"; }
-  else
-    systemctl is-active --quiet "$ssh_service" || systemctl start "$ssh_service" || exit $ERR_CONFIG_PUBKEY_AUTH_SSH
-  fi
+  # Validate without starting a service that may intentionally use socket activation.
+  install -d -m 0755 -o root -g root /run/sshd || { rm -f "$TMP"; exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"; }
 
   # Include files can override the candidate's global authentication setting.
   sshd -t -f "$TMP" || { rm -f "$TMP"; exit $ERR_CONFIG_PUBKEY_AUTH_SSH; }
@@ -1065,6 +1061,13 @@ disableSSHPubkeyAuth() {
   if [ -f "$policy_dir/disabled" ]; then
     restoreSSH || exit "$ERR_DISABLE_SSH"
     systemctl is-active --quiet "$ssh_service" || return 0
+  fi
+  if ! systemctl is-active --quiet "$ssh_service"; then
+    if systemctl is-active --quiet ssh.socket ||
+        systemctl is-active --quiet sshd.socket; then
+      return 0
+    fi
+    systemctl start "$ssh_service" || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
   fi
   # Reload or restart ssh service
   systemctl reload-or-restart "$ssh_service" || exit $ERR_CONFIG_PUBKEY_AUTH_SSH
