@@ -875,10 +875,29 @@ PubkeyAuthentication no"
             The file "$SSH_POLICY_DIR/disabled" should not be exist
         End
 
-        It 'can restore a unique endpoint disabled by legacy CSE without inventing boot links'
-            restore_legacy_disabled() {
+        It 'removes only its own block when the saved activation record is empty'
+            remove_unrecorded_block() {
                 printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                disableSSH
+                [ ! -s "$SSH_POLICY_DIR/activation" ] || return 1
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+            }
+            When call remove_unrecorded_block
+            The status should be success
+            The output should equal inactivedisabled
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The file "$SSH_POLICY_DIR/activation" should not be exist
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+        End
+
+        It 'restores an observed active service without inventing enabled boot links'
+            restore_active_only_service() {
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
@@ -886,13 +905,13 @@ PubkeyAuthentication no"
                 cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
                 cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
             }
-            When call restore_legacy_disabled
+            When call restore_active_only_service
             The status should be success
             The output should equal activedisabled
         End
 
-        It 'explicitly enables the unique legacy service when both endpoints are disabled'
-            restore_ambiguous_legacy() {
+        It 'does not select a legacy service when both endpoints have no recorded activation'
+            remove_ambiguous_block() {
                 printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
                 printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
@@ -904,10 +923,11 @@ PubkeyAuthentication no"
                 cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 cat "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
             }
-            When call restore_ambiguous_legacy
+            When call remove_ambiguous_block
             The status should be success
-            The output should equal activeenableddisabled
+            The output should equal inactivedisableddisabled
             The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
         End
 
         It 'leaves a stopped service unchanged for LocalUser without an owned policy'
@@ -922,10 +942,12 @@ PubkeyAuthentication no"
             The file "$SSH_TEST_ROOT/activation-commands" should not be exist
         End
 
-        It 'deduplicates Ubuntu aliases when selecting the legacy service'
-            restore_legacy_ubuntu() {
+        It 'restores an explicitly recorded Ubuntu service under its canonical name'
+            restore_recorded_ubuntu() {
                 SSH_MODEL_OS=ubuntu
                 printf loaded > "$SSH_MODEL_DIR/ssh.service.LoadState"
+                printf enabled > "$SSH_MODEL_DIR/ssh.service.UnitFileState"
+                printf active > "$SSH_MODEL_DIR/ssh.service.ActiveState"
                 printf loaded > "$SSH_MODEL_DIR/ssh.socket.LoadState"
                 disableSSH
                 DISABLE_SSH=false
@@ -935,13 +957,13 @@ PubkeyAuthentication no"
                 cat "$SSH_MODEL_DIR/ssh.service.UnitFileState"
                 cat "$SSH_MODEL_DIR/ssh.socket.UnitFileState"
             }
-            When call restore_legacy_ubuntu
+            When call restore_recorded_ubuntu
             The status should be success
             The output should equal activeenableddisabled
         End
 
-        It 'refuses a legacy restore with multiple distinct services'
-            restore_distinct_legacy_services() {
+        It 'does not choose between distinct services without a saved activation'
+            remove_distinct_services_block() {
                 printf loaded > "$SSH_MODEL_DIR/ssh.service.LoadState"
                 printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
@@ -950,14 +972,16 @@ PubkeyAuthentication no"
                 SHOULD_RESTORE_SSH=true
                 reconcileSSHPolicy
             }
-            When call restore_distinct_legacy_services
-            The status should equal 172
-            The stderr should include "multiple distinct services"
-            The file "$SSH_POLICY_DIR/disabled" should be exist
+            When call remove_distinct_services_block
+            The status should be success
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The contents of file "$SSH_MODEL_DIR/ssh.service.ActiveState" should equal inactive
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
         End
 
-        It 'does not bypass an external service mask in the legacy fallback'
-            restore_masked_legacy_service() {
+        It 'leaves an unrecorded external mask unchanged when removing its block'
+            remove_masked_service_block() {
                 printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
                 printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
@@ -967,11 +991,11 @@ PubkeyAuthentication no"
                 SHOULD_RESTORE_SSH=true
                 reconcileSSHPolicy
             }
-            When call restore_masked_legacy_service
-            The status should equal 172
-            The stderr should include "external masks are not removed"
+            When call remove_masked_service_block
+            The status should be success
             The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
-            The file "$SSH_POLICY_DIR/disabled" should be exist
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
         End
 
         It 'keeps SSH blocked when the enabled policy is unspecified'
@@ -1048,6 +1072,54 @@ PubkeyAuthentication no"
             The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
         End
 
+        It 'does not restore activation without an owned disable marker'
+            mkdir -p "$SSH_POLICY_DIR"
+            printf 'sshd.service enabled\n' > "$SSH_POLICY_DIR/activation"
+            printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+            printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+            When call restoreSSH
+            The status should be success
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+            The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
+            The file "$SSH_POLICY_DIR/activation" should be exist
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+        End
+
+        It 'does not infer a migration when the saved activation record is empty'
+            remove_unrecorded_migration_block() {
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                disableSSH
+                printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
+                printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+            }
+            When call remove_unrecorded_migration_block
+            The status should be success
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.socket.ActiveState" should equal inactive
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+        End
+
+        It 'does not bypass an invalid saved record with an enabled package socket'
+            restore_invalid_record() {
+                disableSSH
+                printf 'unknown enabled\n' > "$SSH_POLICY_DIR/activation"
+                printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
+                printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+            }
+            When call restore_invalid_record
+            The status should equal 172
+            The stderr should include "no valid saved activation mode"
+            The file "$SSH_POLICY_DIR/disabled" should be exist
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+        End
+
         It 'fails provisioning when the persistent policy cannot be loaded'
             FAIL_COMMAND=daemon-reload
             When run disableSSH
@@ -1122,6 +1194,47 @@ PubkeyAuthentication no"
             The output should equal active
             The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication no"
             The contents of file "$SSHD_CONFIG_FILE" should include "  PubkeyAuthentication yes"
+        End
+
+        It 'does not restart an unrecorded Entra service while removing its own block'
+            remove_unrecorded_entra_block() {
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                disableSSH
+                DISABLE_SSH=false
+                DISABLE_PUBKEY_AUTH=true
+                EXPECTED_PUBKEY=no
+                reconcileSSHPolicy
+            }
+            When call remove_unrecorded_entra_block
+            The status should be success
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication no"
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+            The contents of file "$SSH_TEST_ROOT/commands" should not include "reload-or-restart"
+        End
+
+        It 'restores an owned Entra socket without restarting its inactive service'
+            restore_entra_socket() {
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
+                printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
+                printf active > "$SSH_MODEL_DIR/sshd.socket.ActiveState"
+                disableSSH
+                DISABLE_SSH=false
+                DISABLE_PUBKEY_AUTH=true
+                EXPECTED_PUBKEY=no
+                reconcileSSHPolicy
+            }
+            When call restore_entra_socket
+            The status should be success
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The contents of file "$SSH_MODEL_DIR/sshd.socket.ActiveState" should equal active
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+            The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
+            The contents of file "$SSH_TEST_ROOT/commands" should not include "reload-or-restart"
         End
 
         Describe 'owned Entra activation failures'

@@ -815,7 +815,7 @@ createKubeManifestDir() {
 
 # Prefer socket activation when the distribution enables it; aliases resolve to Id.
 getSSHActivation() {
-    local unit load_state enabled_state active_state id candidate=""
+    local unit load_state enabled_state active_state id
     for unit in ssh.socket sshd.socket ssh.service sshd.service; do
         load_state=$(systemctl show "$unit" --property=LoadState --value) || return 1
         case "$load_state" in
@@ -838,19 +838,7 @@ getSSHActivation() {
             return 0
         fi
     done
-    [ "${1:-false}" = true ] || return 0
-    # Legacy stop+disable leaves no enabled or active endpoint. Capture only
-    # an unambiguous unmasked unit, without inventing enabled boot links.
-    for unit in ssh.socket sshd.socket ssh.service sshd.service; do
-        load_state=$(systemctl show "$unit" --property=LoadState --value) || return 1
-        [ "$load_state" = loaded ] || continue
-        id=$(systemctl show "$unit" --property=Id --value) || return 1
-        if [ -n "$candidate" ] && [ "$candidate" != "$id" ]; then
-            return 0
-        fi
-        candidate="$id"
-    done
-    [ -z "$candidate" ] || printf '%s disabled\n' "$candidate"
+    return 0
 }
 
 installSSHDisablePolicy() {
@@ -860,7 +848,7 @@ installSSHDisablePolicy() {
     mkdir -p "$policy_dir" || return 1
     chmod 0700 "$policy_dir" || return 1
     if [ ! -f "$policy_dir/activation" ]; then
-        getSSHActivation true > "$policy_dir/activation.tmp" &&
+        getSSHActivation > "$policy_dir/activation.tmp" &&
             mv "$policy_dir/activation.tmp" "$policy_dir/activation" || return 1
     fi
     touch "$policy_dir/disabled" || return 1
@@ -886,40 +874,28 @@ ConditionPathExists=!$policy_dir/disabled"
 
 restoreSSH() {
     local policy_dir="${SSH_POLICY_DIR:-/etc/aks/ssh-policy}"
-    local unit activation load_state id candidate="" owned_policy=false legacy_activation=false
-    [ ! -f "$policy_dir/disabled" ] || owned_policy=true
-    if [ "$owned_policy" = true ] && [ ! -f "$policy_dir/activation" ]; then
+    local unit activation load_state current_activation
+    [ -f "$policy_dir/disabled" ] || return 0
+    if [ ! -f "$policy_dir/activation" ]; then
         echo "Cannot restore SSH: the owned activation record is missing" >&2
         return 1
     fi
+    activation=$(cat "$policy_dir/activation") || return 1
+    if [ -z "$activation" ]; then
+        # An empty snapshot observed no activation; undo only our own block.
+        rm -f "$policy_dir/disabled" || return 1
+        rm -f "$policy_dir/activation"
+        return "$?"
+    fi
+    case "$activation" in
+        "ssh.service enabled"|"sshd.service enabled"|"ssh.socket enabled"|"sshd.socket enabled"|\
+        "ssh.service disabled"|"sshd.service disabled"|"ssh.socket disabled"|"sshd.socket disabled") ;;
+        *) echo "Cannot restore SSH: no valid saved activation mode" >&2; return 1 ;;
+    esac
     # Package upgrades may have migrated service activation to a socket while
     # our condition kept it blocked. Respect that mode before the saved mode.
-    activation=$(getSSHActivation) || return 1
-    if [ -z "$activation" ] && [ "$owned_policy" = true ]; then
-        activation=$(cat "$policy_dir/activation") || return 1
-    fi
-    # Legacy CSE discarded the original service/socket mode. An explicit enable
-    # may select a unique unmasked service, but never invent the previous mode.
-    if [ -z "$activation" ]; then
-        for unit in ssh.service sshd.service; do
-            load_state=$(systemctl show "$unit" --property=LoadState --value) || return 1
-            case "$load_state" in
-                not-found) continue ;;
-                loaded) ;;
-                *) echo "Cannot restore SSH: $unit is $load_state; external masks are not removed" >&2; return 1 ;;
-            esac
-            id=$(systemctl show "$unit" --property=Id --value) || return 1
-            if [ -n "$candidate" ] && [ "$candidate" != "$id" ]; then
-                echo "Cannot restore SSH: multiple distinct services are installed" >&2
-                return 1
-            fi
-            candidate="$id"
-        done
-        if [ -n "$candidate" ]; then
-            activation="$candidate enabled"
-            legacy_activation=true
-        fi
-    fi
+    current_activation=$(getSSHActivation) || return 1
+    [ -z "$current_activation" ] || activation="$current_activation"
     read -r unit activation <<< "$activation"
     case "$unit:$activation" in
         ssh.service:enabled|sshd.service:enabled|ssh.socket:enabled|sshd.socket:enabled|\
@@ -931,23 +907,17 @@ restoreSSH() {
         echo "Cannot restore SSH: $unit is $load_state; external masks are not removed" >&2
         return 1
     fi
-    if [ "$owned_policy" = true ] || [ "$legacy_activation" = true ]; then
-        [ "$activation" != enabled ] || systemctl enable "$unit" || return 1
-    fi
-    if [ "$owned_policy" = true ]; then
-        rm -f "$policy_dir/disabled" || return 1
-    fi
+    [ "$activation" != enabled ] || systemctl enable "$unit" || return 1
+    rm -f "$policy_dir/disabled" || return 1
     # Keep the owned drop-ins: without the marker their conditions allow starts.
     if ! systemctl start "$unit" ||
         ! systemctl is-active --quiet "$unit"; then
-        if [ "$owned_policy" = true ]; then
-            touch "$policy_dir/disabled" || return 1
-            systemctl stop "$unit" || return 1
-        fi
+        touch "$policy_dir/disabled" || return 1
+        systemctl stop "$unit" || return 1
         echo "Failed to restore SSH activation through $unit" >&2
         return 1
     fi
-    [ "$owned_policy" != true ] || rm -f "$policy_dir/activation"
+    rm -f "$policy_dir/activation"
 }
 
 reconcileSSHPolicy() {
@@ -1053,6 +1023,7 @@ disableSSHPubkeyAuth() {
 
   if [ -f "$policy_dir/disabled" ]; then
     restoreSSH || exit "$ERR_DISABLE_SSH"
+    systemctl is-active --quiet "$ssh_service" || return 0
   fi
   # Reload or restart ssh service
   systemctl reload-or-restart "$ssh_service" || exit $ERR_CONFIG_PUBKEY_AUTH_SSH
