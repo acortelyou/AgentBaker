@@ -957,7 +957,16 @@ reconcileSSHPolicy() {
     elif [ "${DISABLE_PUBKEY_AUTH:-}" = true ]; then
         logs_to_events "AKS.CSE.disableSSHPubkeyAuth" disableSSHPubkeyAuth
     elif [ "${SHOULD_RESTORE_SSH:-}" = true ]; then
-        if [ -f "$policy_dir/disabled" ]; then
+        if [ -f "$policy_dir/pubkey-auth" ]; then
+            local pubkey_auth
+            pubkey_auth=$(cat "$policy_dir/pubkey-auth") || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+            configureSSHPubkeyAuth "$pubkey_auth" || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+            if [ -f "$policy_dir/disabled" ]; then
+                restoreSSH || return "$ERR_DISABLE_SSH"
+            fi
+            reloadSSHAuthentication false || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+            rm -f "$policy_dir/pubkey-auth" || return "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+        elif [ -f "$policy_dir/disabled" ]; then
             restoreSSH || return "$ERR_DISABLE_SSH"
         fi
     fi
@@ -1006,11 +1015,15 @@ disableSSH() {
     [ "$result" -eq 0 ] || exit "$result"
 }
 
-disableSSHPubkeyAuth() {
-  local policy_dir="${SSH_POLICY_DIR:-/etc/aks/ssh-policy}"
+configureSSHPubkeyAuth() {
+  local desired="$1"
+  case "$desired" in
+    yes|no) ;;
+    *) echo "Invalid SSH public-key authentication policy: $desired" >&2; return 1 ;;
+  esac
   local SSHD_CONFIG="${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}"
   local TMP
-  TMP="$(mktemp)"
+  TMP="$(mktemp)" || return 1
 
   # AAD SSH extension will append following section to the end of sshd_config,
   # so we need to check the "Match" section, and only update "PubkeyAuthentication" outside of it.
@@ -1019,7 +1032,7 @@ disableSSHPubkeyAuth() {
   # PubkeyAuthentication yes
   # AuthorizedKeysCommand /usr/sbin/aad_certhandler %u %k
   # AuthorizedKeysCommandUser root
-  awk -v desired="no" '
+  awk -v desired="$desired" '
     BEGIN { in_match=0; replaced=0; inserted=0 }
     /^Match([[:space:]]|$)/ {
       if (!replaced && !inserted) { print "PubkeyAuthentication " desired; inserted=1 }
@@ -1030,32 +1043,64 @@ disableSSHPubkeyAuth() {
     }
     { print }
     END { if (!replaced && !inserted) print "PubkeyAuthentication " desired }
-  ' "$SSHD_CONFIG" > "$TMP"
+  ' "$SSHD_CONFIG" > "$TMP" || { rm -f "$TMP"; return 1; }
 
-  local ssh_service="sshd.service"
-  if systemctl cat ssh.service >/dev/null 2>&1; then
-    ssh_service="ssh.service"
-  fi
-  if [ -f "$policy_dir/disabled" ]; then
-    # The owned condition blocks startup, so recreate Ubuntu's validation directory.
-    install -d -m 0755 -o root -g root /run/sshd || { rm -f "$TMP"; exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"; }
-  else
-    systemctl is-active --quiet "$ssh_service" || systemctl start "$ssh_service" || exit $ERR_CONFIG_PUBKEY_AUTH_SSH
-  fi
+  # Ubuntu removes this runtime directory when ssh.service stops. Validation
+  # must not start the server merely to recreate its privilege-separation path.
+  install -d -m 0755 -o root -g root /run/sshd || { rm -f "$TMP"; return 1; }
 
-  # Validate the candidate config
-  sshd -t -f "$TMP" || { rm -f "$TMP"; exit $ERR_CONFIG_PUBKEY_AUTH_SSH; }
+  # Validate syntax and the effective global policy, including Include files.
+  sshd -t -f "$TMP" || { rm -f "$TMP"; return 1; }
+  local effective
+  effective=$(sshd -T -f "$TMP") || { rm -f "$TMP"; return 1; }
+  if [ "$(awk '$1 == "pubkeyauthentication" { print $2 }' <<< "$effective")" != "$desired" ]; then
+    echo "SSH configuration does not enforce the requested public-key policy" >&2
+    rm -f "$TMP"
+    return 1
+  fi
 
   # Replace the original with the candidate (permissions 600, owned by root)
   # Mode 0600 is required by CIS Benchmark control 5.1.1
-  install -m 0600 -o root -g root "$TMP" "$SSHD_CONFIG" || { rm -f "$TMP"; exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"; }
+  install -m 0600 -o root -g root "$TMP" "$SSHD_CONFIG" || { rm -f "$TMP"; return 1; }
   rm -f "$TMP"
+}
 
-  if [ -f "$policy_dir/disabled" ]; then
-    restoreSSH || exit "$ERR_DISABLE_SSH"
+reloadSSHAuthentication() {
+  local start_if_inactive="${1:-true}"
+  local ssh_service=sshd.service
+  if systemctl cat ssh.service >/dev/null 2>&1; then
+    ssh_service=ssh.service
   fi
-  # Reload or restart ssh service
-  systemctl reload-or-restart "$ssh_service" || exit $ERR_CONFIG_PUBKEY_AUTH_SSH
+  if ! systemctl is-active --quiet "$ssh_service"; then
+    [ "$start_if_inactive" != false ] || return 0
+    if ! systemctl is-active --quiet ssh.socket &&
+        ! systemctl is-active --quiet sshd.socket; then
+      systemctl start "$ssh_service" || return 1
+    else
+      return 0
+    fi
+  fi
+  systemctl reload-or-restart "$ssh_service"
+}
+
+disableSSHPubkeyAuth() {
+  local policy_dir="${SSH_POLICY_DIR:-/etc/aks/ssh-policy}"
+  local original
+  mkdir -p "$policy_dir" || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+  chmod 0700 "$policy_dir" || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+  if [ ! -f "$policy_dir/pubkey-auth" ]; then
+    install -d -m 0755 -o root -g root /run/sshd || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+    original=$(sshd -T -f "${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}") || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+    original=$(awk '$1 == "pubkeyauthentication" { print $2 }' <<< "$original")
+    case "$original" in
+      yes|no) ;;
+      *) echo "Cannot determine the original SSH public-key policy" >&2; exit "$ERR_CONFIG_PUBKEY_AUTH_SSH" ;;
+    esac
+    printf '%s\n' "$original" > "$policy_dir/pubkey-auth" || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+  fi
+  configureSSHPubkeyAuth no || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+  restoreSSH || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+  reloadSSHAuthentication || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
 }
 
 get_compute_sku() {

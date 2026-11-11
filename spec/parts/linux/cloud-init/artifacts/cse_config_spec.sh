@@ -662,6 +662,8 @@ disable sshd"
             cat "${SSHD_CONFIG_FILE}"
         }
 
+        restoreSSH() { return 0; }
+
         BeforeEach 'setup'
         AfterEach 'cleanup'
 
@@ -741,6 +743,84 @@ PubkeyAuthentication no"
             The stderr should include "systemctl start sshd.service"
         End
 
+        It 'does not start SSH when candidate validation fails'
+            echo "PubkeyAuthentication yes" > "${SSHD_CONFIG_FILE}"
+            SSH_SERVICE_ACTIVE=false
+            sshd() {
+                if [ "$1" = -T ]; then
+                    echo "pubkeyauthentication yes"
+                    return 0
+                fi
+                return 1
+            }
+            When run disableSSHPubkeyAuth
+            The status should equal 178
+            The contents of file "${SSHD_CONFIG_FILE}" should equal "PubkeyAuthentication yes"
+            The stderr should not include "systemctl start"
+        End
+
+        It 'installs the restrictive config before starting SSH'
+            echo "PubkeyAuthentication yes" > "${SSHD_CONFIG_FILE}"
+            SSH_SERVICE_ACTIVE=false
+            systemctl() {
+                case "$1" in
+                    cat) return 0 ;;
+                    is-active) return 3 ;;
+                    start) grep -qx 'PubkeyAuthentication no' "${SSHD_CONFIG_FILE}" ;;
+                    reload-or-restart) return 0 ;;
+                    *) return 1 ;;
+                esac
+            }
+            When call disableSSHPubkeyAuth
+            The status should be success
+            The stderr should include "sshd -t -f"
+        End
+
+        It 'restores only the owned global authentication setting and reloads the running server'
+            cat > "${SSHD_CONFIG_FILE}" <<'EOF'
+PubkeyAuthentication yes
+Match User entra
+  PubkeyAuthentication yes
+EOF
+            disable_then_restore_auth() {
+                disableSSHPubkeyAuth
+                SHOULD_RESTORE_SSH=true
+                reconcileSSHPolicy
+                cat "${SSHD_CONFIG_FILE}"
+            }
+            When call disable_then_restore_auth
+            The status should be success
+            The output should equal "PubkeyAuthentication yes
+Match User entra
+  PubkeyAuthentication yes"
+            The stderr should include "systemctl reload-or-restart ssh.service"
+            The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
+        End
+
+        It 'does not activate SSH when installing the authentication config fails'
+            echo "PubkeyAuthentication yes" > "${SSHD_CONFIG_FILE}"
+            SSH_SERVICE_ACTIVE=false
+            install() { [ "$1" = -d ]; }
+            When run disableSSHPubkeyAuth
+            The status should equal 178
+            The contents of file "${SSHD_CONFIG_FILE}" should equal "PubkeyAuthentication yes"
+            The stderr should include "sshd -t -f"
+            The stderr should not include "systemctl start"
+        End
+
+        It 'does not reopen SSH when an Include overrides the requested authentication policy'
+            echo "Include /etc/ssh/sshd_config.d/*.conf" > "$SSHD_CONFIG_FILE"
+            SSH_SERVICE_ACTIVE=false
+            sshd() {
+                [ "$1" != -T ] || echo 'pubkeyauthentication yes'
+                return 0
+            }
+            When run disableSSHPubkeyAuth
+            The status should equal 178
+            The stderr should include "does not enforce the requested public-key policy"
+            The stderr should not include "systemctl start"
+            The contents of file "$SSHD_CONFIG_FILE" should equal "Include /etc/ssh/sshd_config.d/*.conf"
+        End
     End
     Describe 'persistent SSH access policy'
         Include "./parts/linux/cloud-init/artifacts/cse_config.sh"
@@ -920,6 +1000,98 @@ PubkeyAuthentication no"
             The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
             The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
             The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+        End
+
+        Describe 'legacy Entra authentication reconciliation without a disable marker'
+            prepare_legacy_entra_auth() {
+                DISABLE_SSH=false
+                DISABLE_PUBKEY_AUTH=true
+                SHOULD_RESTORE_SSH=true
+                EXPECTED_PUBKEY=no
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+            }
+
+            It 'enables boot activation after validating PubkeyAuthentication=no'
+                prepare_legacy_entra_auth
+                When call reconcileSSHPolicy
+                The status should be success
+                The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
+                The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal enabled
+                The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication no"
+                The file "$SSH_POLICY_DIR/disabled" should not be exist
+            End
+
+            It 'preserves an external service mask with PubkeyAuthentication=no'
+                prepare_legacy_entra_auth
+                printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
+                When run reconcileSSHPolicy
+                The status should equal 178
+                The stderr should include "external masks are not removed"
+                The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+                The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
+                The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
+            End
+        End
+
+        Describe 'LocalUser authentication restoration without a disable marker'
+            Parameters
+                loaded active
+                loaded inactive
+                masked inactive
+            End
+
+            It "restores authentication without changing a $1/$2 service"
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                mkdir -p "$SSH_POLICY_DIR"
+                printf yes > "$SSH_POLICY_DIR/pubkey-auth"
+                printf 'PubkeyAuthentication no\nMatch User entra\n  PubkeyAuthentication yes\n' > "$SSHD_CONFIG_FILE"
+                printf '%s' "$1" > "$SSH_MODEL_DIR/sshd.service.LoadState"
+                printf '%s' "$2" > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                When call reconcileSSHPolicy
+                The status should be success
+                The contents of file "$SSHD_CONFIG_FILE" should equal "PubkeyAuthentication yes
+Match User entra
+  PubkeyAuthentication yes"
+                The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal "$1"
+                The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal "$2"
+                The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
+                The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+                The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
+            End
+        End
+
+        It 'keeps the authentication backup when reloading LocalUser authentication fails'
+            DISABLE_SSH=false
+            SHOULD_RESTORE_SSH=true
+            mkdir -p "$SSH_POLICY_DIR"
+            printf yes > "$SSH_POLICY_DIR/pubkey-auth"
+            printf 'PubkeyAuthentication no\n' > "$SSHD_CONFIG_FILE"
+            FAIL_COMMAND="reload-or-restart sshd.service"
+            When call reconcileSSHPolicy
+            The status should equal 178
+            The contents of file "$SSH_POLICY_DIR/pubkey-auth" should equal yes
+            The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+        End
+
+        It 'restores authentication before activating an owned disabled service for LocalUser'
+            restore_owned_localuser_auth() {
+                disableSSHPubkeyAuth
+                disableSSH
+                DISABLE_SSH=false
+                SHOULD_RESTORE_SSH=true
+                EXPECTED_PUBKEY=yes
+                reconcileSSHPolicy
+            }
+            When call restore_owned_localuser_auth
+            The status should be success
+            The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
+            The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal enabled
+            The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication yes"
+            The file "$SSH_POLICY_DIR/disabled" should not be exist
+            The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
         End
 
         It 'deduplicates Ubuntu aliases when selecting the legacy service'
