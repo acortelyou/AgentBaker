@@ -1047,8 +1047,15 @@ disableSSHPubkeyAuth() {
     systemctl is-active --quiet "$ssh_service" || systemctl start "$ssh_service" || exit $ERR_CONFIG_PUBKEY_AUTH_SSH
   fi
 
-  # Validate the candidate config
+  # Include files can override the candidate's global authentication setting.
   sshd -t -f "$TMP" || { rm -f "$TMP"; exit $ERR_CONFIG_PUBKEY_AUTH_SSH; }
+  local effective_config
+  effective_config=$(sshd -T -f "$TMP") || { rm -f "$TMP"; exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"; }
+  if [ "$(awk 'tolower($1) == "pubkeyauthentication" { print $2 }' <<< "$effective_config")" != no ]; then
+    echo "Effective PubkeyAuthentication is not disabled" >&2
+    rm -f "$TMP"
+    exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
+  fi
 
   # Replace the original with the candidate (permissions 600, owned by root)
   # Mode 0600 is required by CIS Benchmark control 5.1.1

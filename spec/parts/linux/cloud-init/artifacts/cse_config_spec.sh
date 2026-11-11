@@ -1092,6 +1092,15 @@ PubkeyAuthentication no"
         End
 
         It 'configures Entra authentication before restoring a disabled service'
+            sshd() {
+                if [ "$1" = -T ]; then
+                    [ -f "$SSH_POLICY_DIR/disabled" ] || return 1
+                    grep -qx 'PubkeyAuthentication yes' "$SSHD_CONFIG_FILE" || return 1
+                    grep -qx 'PubkeyAuthentication no' "$3" || return 1
+                    touch "$SSH_TEST_ROOT/effective-validated"
+                    printf 'PubkeyAuthentication no\n'
+                fi
+            }
             restore_entra_auth() {
                 disableSSH
                 DISABLE_SSH=false
@@ -1103,6 +1112,7 @@ PubkeyAuthentication no"
             When call restore_entra_auth
             The status should be success
             The output should equal active
+            The file "$SSH_TEST_ROOT/effective-validated" should be exist
             The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication no"
             The contents of file "$SSHD_CONFIG_FILE" should include "  PubkeyAuthentication yes"
         End
@@ -1181,6 +1191,61 @@ PubkeyAuthentication no"
                 The file "$SSH_POLICY_DIR/disabled" should be exist
                 The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
                 The contents of file "$SSHD_CONFIG_FILE" should include "PubkeyAuthentication yes"
+            End
+        End
+
+        Describe 'owned Entra effective authentication failures'
+            Parameters
+                command
+                enabled
+                missing
+                invalid
+            End
+
+            It "retains the original configuration and block for $1 effective policy"
+                SSH_AUTH_FAILURE="$1"
+                printf 'PubkeyAuthentication yes\n' > "$SSH_TEST_ROOT/included.conf"
+                printf 'Include %s\n' "$SSH_TEST_ROOT/included.conf" > "$SSHD_CONFIG_FILE"
+                printf 'PubkeyAuthentication yes\nMatch User entra\n  PubkeyAuthentication yes\n' >> "$SSHD_CONFIG_FILE"
+                ORIGINAL_SSH_CONFIG=$(cat "$SSHD_CONFIG_FILE")
+                sshd() {
+                    printf '%s\n' "$3" > "$SSH_TEST_ROOT/auth-candidate"
+                    [ "$1" = -T ] || return 0
+                    grep -qx 'PubkeyAuthentication no' "$3" || return 1
+                    case "$SSH_AUTH_FAILURE" in
+                        command)
+                            printf 'pubkeyauthentication no\n'
+                            echo "Effective config evaluation failed" >&2
+                            return 1
+                            ;;
+                        enabled) printf 'pubkeyauthentication yes\n' ;;
+                        missing) printf 'passwordauthentication no\n' ;;
+                        invalid) printf 'pubkeyauthentication invalid\n' ;;
+                    esac
+                }
+                fail_effective_entra() {
+                    disableSSH
+                    DISABLE_SSH=false
+                    DISABLE_PUBKEY_AUTH=true
+                    reconcileSSHPolicy
+                }
+                if [ "$SSH_AUTH_FAILURE" = command ]; then
+                    expected_error="Effective config evaluation failed"
+                else
+                    expected_error="Effective PubkeyAuthentication is not disabled"
+                fi
+
+                When run fail_effective_entra
+                The status should equal 178
+                The stderr should include "$expected_error"
+                The contents of file "$SSHD_CONFIG_FILE" should equal "$ORIGINAL_SSH_CONFIG"
+                The file "$SSH_POLICY_DIR/disabled" should be exist
+                The contents of file "$SSH_POLICY_DIR/activation" should equal "sshd.service enabled"
+                The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
+                The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
+                The file "$SSH_TEST_ROOT/activation-commands" should not be exist
+                The contents of file "$SSH_TEST_ROOT/commands" should not include "reload-or-restart"
+                The file "$(cat "$SSH_TEST_ROOT/auth-candidate")" should not be exist
             End
         End
 
