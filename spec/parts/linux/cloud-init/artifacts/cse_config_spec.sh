@@ -835,104 +835,15 @@ Match User entra
     End
     Describe 'persistent SSH access policy'
         Include "./parts/linux/cloud-init/artifacts/cse_config.sh"
-
-        setup_ssh_policy() {
-            SSH_TEST_ROOT=$(mktemp -d)
-            SSH_POLICY_DIR="$SSH_TEST_ROOT/policy"
-            SSH_SYSTEMD_UNIT_DIR="$SSH_TEST_ROOT/systemd"
-            SSH_MODEL_DIR="$SSH_TEST_ROOT/model"
-            EVENTS_LOGGING_DIR="$SSH_TEST_ROOT/events"
-            mkdir -p "$SSH_MODEL_DIR" "$EVENTS_LOGGING_DIR"
-            SSH_MODEL_OS=azurelinux
-            FAIL_COMMAND=""
-            DISABLE_SSH=true
-            DISABLE_PUBKEY_AUTH=false
-            SHOULD_RESTORE_SSH=false
-            EXPECTED_PUBKEY=""
-            SSHD_CONFIG_FILE="$SSH_TEST_ROOT/sshd_config"
-            printf 'PubkeyAuthentication yes\nMatch User entra\n  PubkeyAuthentication yes\n' > "$SSHD_CONFIG_FILE"
-            local unit
-            for unit in ssh.socket sshd.socket ssh.service sshd.service; do
-                printf not-found > "$SSH_MODEL_DIR/$unit.LoadState"
-                printf disabled > "$SSH_MODEL_DIR/$unit.UnitFileState"
-                printf inactive > "$SSH_MODEL_DIR/$unit.ActiveState"
-                printf '%s' "$unit" > "$SSH_MODEL_DIR/$unit.Id"
-            done
-            printf loaded > "$SSH_MODEL_DIR/sshd.service.LoadState"
-            printf enabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
-            printf active > "$SSH_MODEL_DIR/sshd.service.ActiveState"
-        }
-
-        cleanup_ssh_policy() { rm -rf "$SSH_TEST_ROOT"; }
+        Include "./spec/support/ssh_policy.sh"
         BeforeEach setup_ssh_policy
         AfterEach cleanup_ssh_policy
 
-        ssh_model_unit() {
-            local unit="$1"
-            case "$unit" in ssh|sshd) unit="$unit.service" ;; esac
-            if [ "$SSH_MODEL_OS" = ubuntu ] && [ "$unit" = sshd.service ]; then
-                unit=ssh.service
-            fi
-            printf '%s' "$unit"
-        }
-
-        systemctl() {
-            local action="$1" unit property
-            printf '%s\n' "$*" >> "$SSH_TEST_ROOT/commands"
-            [ "$*" != "$FAIL_COMMAND" ] || return 1
-            case "$action" in
-                enable|start) printf '%s\n' "$*" >> "$SSH_TEST_ROOT/activation-commands" ;;
-            esac
-            [ "$action" != daemon-reload ] || return 0
-            if [ "$action" = is-active ]; then
-                unit=$(ssh_model_unit "$3")
-                [ "$(cat "$SSH_MODEL_DIR/$unit.ActiveState")" = active ]
-                return
-            fi
-            unit=$(ssh_model_unit "$2")
-            case "$action" in
-                show)
-                    property="${3#--property=}"
-                    cat "$SSH_MODEL_DIR/$unit.$property"
-                    ;;
-                cat) [ "$(cat "$SSH_MODEL_DIR/$unit.LoadState")" = loaded ] ;;
-                stop) printf inactive > "$SSH_MODEL_DIR/$unit.ActiveState" ;;
-                disable) printf disabled > "$SSH_MODEL_DIR/$unit.UnitFileState" ;;
-                enable) printf enabled > "$SSH_MODEL_DIR/$unit.UnitFileState" ;;
-                start)
-                    [ "$(cat "$SSH_MODEL_DIR/$unit.LoadState")" = loaded ] || return 1
-                    if [ -f "$SSH_POLICY_DIR/disabled" ] &&
-                        grep -qx "ConditionPathExists=!$SSH_POLICY_DIR/disabled" \
-                            "$SSH_SYSTEMD_UNIT_DIR/$unit.d/90-aks-ssh-access.conf"; then
-                        return 0
-                    fi
-                    if [ -n "$EXPECTED_PUBKEY" ]; then
-                        grep -qx "PubkeyAuthentication $EXPECTED_PUBKEY" "$SSHD_CONFIG_FILE" || return 1
-                    fi
-                    printf active > "$SSH_MODEL_DIR/$unit.ActiveState"
-                    ;;
-                unmask) printf loaded > "$SSH_MODEL_DIR/$unit.LoadState" ;;
-                reload-or-restart) return 0 ;;
-                *) return 1 ;;
-            esac
-        }
-
-        timeout() { shift; "$@"; }
-        sleep() { :; }
-        sshd() {
-            if [ "$1" = -T ]; then
-                awk 'BEGIN { value="yes" } /^Match/ { exit } /^PubkeyAuthentication / { value=$2 }
-                    END { print "pubkeyauthentication " value }' "$3"
-            fi
-        }
-        install() {
-            [ "$1" != -d ] || return 0
-            while [ "$#" -gt 2 ]; do shift; done
-            command cp "$1" "$2"
-        }
         run_node_prep_ssh_reconciliation() {
             sed -n '/^function nodePrep {/,/^}/p' \
-                parts/linux/cloud-init/artifacts/cse_main.sh > "$SSH_TEST_ROOT/node-prep.sh"
+                parts/linux/cloud-init/artifacts/cse_main.sh |
+                sed "s|/opt/azure/containers/base_prep.complete|$SSH_TEST_ROOT/base_prep.complete|g" \
+                    > "$SSH_TEST_ROOT/node-prep.sh"
             # Load the actual entry point without executing CSE's top-level setup.
             . "$SSH_TEST_ROOT/node-prep.sh"
             nodePrep
@@ -1353,6 +1264,7 @@ Match User entra
         End
 
         It 'enforces Disabled at nodePrep even when basePrep was cached as enabled'
+            touch "$SSH_TEST_ROOT/base_prep.complete"
             logs_to_events() {
                 [ "$2" = reconcileSSHPolicy ] || exit 1
                 "$2"
@@ -1366,6 +1278,7 @@ Match User entra
 
         It 'restores explicitly enabled SSH at nodePrep from a disabled cache'
             prepare_disabled_cache() {
+                touch "$SSH_TEST_ROOT/base_prep.complete"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
@@ -1380,6 +1293,47 @@ Match User entra
             The status should be success
             The file "$SSH_POLICY_DIR/disabled" should not be exist
             The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal active
+        End
+
+        Describe 'uncached Entra node preparation'
+            Parameters
+                legacy active
+                socket inactive
+            End
+
+            It "does not activate a stopped service twice after restoring a $1 snapshot"
+                prepare_uncached_entra() {
+                    printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
+                    printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
+                    if [ "$1" = socket ]; then
+                        printf loaded > "$SSH_MODEL_DIR/sshd.socket.LoadState"
+                        printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
+                        printf active > "$SSH_MODEL_DIR/sshd.socket.ActiveState"
+                    fi
+                    disableSSH
+                    DISABLE_SSH=false
+                    DISABLE_PUBKEY_AUTH=true
+                    reconcileSSHPolicy
+                    [ ! -f "$SSH_POLICY_DIR/disabled" ] || return 1
+                    [ "$(cat "$SSH_MODEL_DIR/sshd.service.ActiveState")" = "$2" ] || return 1
+                    run_node_prep_ssh_reconciliation
+                }
+                logs_to_events() {
+                    case "$2" in
+                        reconcileSSHPolicy|disableSSHPubkeyAuth)
+                            printf '%s\n' "$2" >> "$SSH_TEST_ROOT/policy-events"
+                            "$2"
+                            ;;
+                        configureAzureJson) exit 0 ;;
+                        *) exit 1 ;;
+                    esac
+                }
+                When run prepare_uncached_entra "$1" "$2"
+                The status should be success
+                The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal "$2"
+                The contents of file "$SSH_TEST_ROOT/commands" should not include 'enable sshd.service'
+                The contents of file "$SSH_TEST_ROOT/policy-events" should equal disableSSHPubkeyAuth
+            End
         End
     End
     Describe 'configureAzureJson'

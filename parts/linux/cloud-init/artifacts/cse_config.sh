@@ -884,6 +884,44 @@ ConditionPathExists=!$policy_dir/disabled"
     return "$result"
 }
 
+validateSSHActivation() {
+    local unit="$1" load_state accept triggers service
+    local -a services=()
+    load_state=$(systemctl show "$unit" --property=LoadState --value) || return 1
+    if [ "$load_state" != loaded ]; then
+        echo "Cannot restore SSH: $unit is $load_state; external masks are not removed" >&2
+        return 1
+    fi
+    case "$unit" in
+        *.service) return 0 ;;
+        *.socket)
+            accept=$(systemctl show "$unit" --property=Accept --value) || return 1
+            case "$accept" in
+                yes)
+                    # Inspect a template instance without starting a connection handler.
+                    services=("${unit%.socket}@internal.service")
+                    ;;
+                no)
+                    triggers=$(systemctl show "$unit" --property=Triggers --value) || return 1
+                    read -r -a services <<< "$triggers"
+                    ;;
+                *) echo "Cannot restore SSH: invalid Accept state for $unit: $accept" >&2; return 1 ;;
+            esac
+            ;;
+        *) echo "Cannot restore SSH: unsupported activation unit $unit" >&2; return 1 ;;
+    esac
+    if [ "${#services[@]}" -eq 0 ]; then
+        echo "Cannot restore SSH: no backing service reported for $unit" >&2
+        return 1
+    fi
+    for service in "${services[@]}"; do
+        case "$service" in
+            *.service) validateSSHActivation "$service" || return 1 ;;
+            *) echo "Cannot restore SSH: invalid backing service for $unit: $service" >&2; return 1 ;;
+        esac
+    done
+}
+
 restoreSSH() {
     local policy_dir="${SSH_POLICY_DIR:-/etc/aks/ssh-policy}"
     local unit activation load_state id candidate="" owned_policy=false legacy_activation=false
@@ -926,11 +964,7 @@ restoreSSH() {
         ssh.service:disabled|sshd.service:disabled|ssh.socket:disabled|sshd.socket:disabled) ;;
         *) echo "Cannot restore SSH: no valid saved activation mode" >&2; return 1 ;;
     esac
-    load_state=$(systemctl show "$unit" --property=LoadState --value) || return 1
-    if [ "$load_state" != loaded ]; then
-        echo "Cannot restore SSH: $unit is $load_state; external masks are not removed" >&2
-        return 1
-    fi
+    validateSSHActivation "$unit" || return 1
     if [ "$owned_policy" = true ] || [ "$legacy_activation" = true ]; then
         [ "$activation" != enabled ] || systemctl enable "$unit" || return 1
     fi

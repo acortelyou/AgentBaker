@@ -421,8 +421,11 @@ EOF
 # After this stage the node should be fully integrated into the cluster.
 # IMPORTANT: This stage should only run when actually joining a node to the cluster. This step should not be run when creating a VHD image
 function nodePrep {
-    # basePrep can be skipped on a PIS image; use the real node's live policy.
-    logs_to_events "AKS.CSE.reconcileSSHPolicy" reconcileSSHPolicy || exit "$?"
+    # Uncached nodes already applied SSH policy in basePrep in this process.
+    # Cached PIS nodes must apply their live policy here instead.
+    if [ -f /opt/azure/containers/base_prep.complete ]; then
+        logs_to_events "AKS.CSE.reconcileSSHPolicy" reconcileSSHPolicy || exit "$?"
+    fi
     logs_to_events "AKS.CSE.configureAzureJson" configureAzureJson
     logs_to_events "AKS.CSE.ensureKubeCACert" ensureKubeCACert
 
