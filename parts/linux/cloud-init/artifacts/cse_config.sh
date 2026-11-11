@@ -1053,7 +1053,7 @@ configureSSHPubkeyAuth() {
   sshd -t -f "$TMP" || { rm -f "$TMP"; return 1; }
   local effective
   effective=$(sshd -T -f "$TMP") || { rm -f "$TMP"; return 1; }
-  if [ "$(awk '$1 == "pubkeyauthentication" { print $2 }' <<< "$effective")" != "$desired" ]; then
+  if [ "$(awk 'tolower($1) == "pubkeyauthentication" { print $2 }' <<< "$effective")" != "$desired" ]; then
     echo "SSH configuration does not enforce the requested public-key policy" >&2
     rm -f "$TMP"
     return 1
@@ -1091,7 +1091,7 @@ disableSSHPubkeyAuth() {
   if [ ! -f "$policy_dir/pubkey-auth" ]; then
     install -d -m 0755 -o root -g root /run/sshd || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
     original=$(sshd -T -f "${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}") || exit "$ERR_CONFIG_PUBKEY_AUTH_SSH"
-    original=$(awk '$1 == "pubkeyauthentication" { print $2 }' <<< "$original")
+    original=$(awk 'tolower($1) == "pubkeyauthentication" { print $2 }' <<< "$original")
     case "$original" in
       yes|no) ;;
       *) echo "Cannot determine the original SSH public-key policy" >&2; exit "$ERR_CONFIG_PUBKEY_AUTH_SSH" ;;

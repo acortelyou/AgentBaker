@@ -613,6 +613,7 @@ disable sshd"
             SSH_POLICY_DIR="$(mktemp -d)"
             SSH_SERVICE_ACTIVE="true"
             SSH_SERVICE_EXISTS="true"
+            SSHD_OUTPUT_KEY=pubkeyauthentication
             DISABLE_SSH=false
             DISABLE_PUBKEY_AUTH=false
             SHOULD_RESTORE_SSH=false
@@ -624,6 +625,7 @@ disable sshd"
             unset SSHD_CONFIG_FILE
             unset SSH_SERVICE_ACTIVE
             unset SSH_SERVICE_EXISTS
+            unset SSHD_OUTPUT_KEY
         }
 
         systemctl() {
@@ -643,8 +645,8 @@ disable sshd"
         sshd() {
             echo "sshd $*" >&2
             if [ "$1" = -T ]; then
-                awk 'BEGIN { value="yes" } /^Match/ { exit } /^PubkeyAuthentication / { value=$2 }
-                    END { print "pubkeyauthentication " value }' "$3"
+                awk -v key="$SSHD_OUTPUT_KEY" 'BEGIN { value="yes" } /^Match/ { exit } /^PubkeyAuthentication / { value=$2 }
+                    END { print key " " value }' "$3"
             fi
             return 0
         }
@@ -776,25 +778,34 @@ PubkeyAuthentication no"
             The stderr should include "sshd -t -f"
         End
 
-        It 'restores only the owned global authentication setting and reloads the running server'
-            cat > "${SSHD_CONFIG_FILE}" <<'EOF'
+        Describe 'authentication restoration across sshd output formats'
+            Parameters
+                pubkeyauthentication
+                PubkeyAuthentication
+                PUBKEYAUTHENTICATION
+            End
+
+            It "restores only the owned global setting with $1 in sshd output"
+                SSHD_OUTPUT_KEY="$1"
+                cat > "${SSHD_CONFIG_FILE}" <<'EOF'
 PubkeyAuthentication yes
 Match User entra
   PubkeyAuthentication yes
 EOF
-            disable_then_restore_auth() {
-                disableSSHPubkeyAuth
-                SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
-                cat "${SSHD_CONFIG_FILE}"
-            }
-            When call disable_then_restore_auth
-            The status should be success
-            The output should equal "PubkeyAuthentication yes
+                disable_then_restore_auth() {
+                    disableSSHPubkeyAuth
+                    SHOULD_RESTORE_SSH=true
+                    reconcileSSHPolicy
+                    cat "${SSHD_CONFIG_FILE}"
+                }
+                When call disable_then_restore_auth
+                The status should be success
+                The output should equal "PubkeyAuthentication yes
 Match User entra
   PubkeyAuthentication yes"
-            The stderr should include "systemctl reload-or-restart ssh.service"
-            The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
+                The stderr should include "systemctl reload-or-restart ssh.service"
+                The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
+            End
         End
 
         It 'does not activate SSH when installing the authentication config fails'
