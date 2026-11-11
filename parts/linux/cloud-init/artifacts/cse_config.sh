@@ -954,7 +954,7 @@ restoreSSH() {
     rm -f "$policy_dir/activation"
 }
 
-reconcileSSHPolicy() {
+applySSHPolicy() {
     local policy_dir="${SSH_POLICY_DIR:-/etc/aks/ssh-policy}"
     if [ "${DISABLE_SSH:-}" = true ]; then
         disableSSH

@@ -776,7 +776,7 @@ PubkeyAuthentication no"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
                 cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
             }
@@ -794,7 +794,7 @@ PubkeyAuthentication no"
                 [ ! -s "$SSH_POLICY_DIR/activation" ] || return 1
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
                 cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
             }
@@ -812,7 +812,7 @@ PubkeyAuthentication no"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
                 cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
             }
@@ -829,7 +829,7 @@ PubkeyAuthentication no"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
                 cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 cat "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
@@ -846,7 +846,7 @@ PubkeyAuthentication no"
             SHOULD_RESTORE_SSH=true
             printf disabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
             printf inactive > "$SSH_MODEL_DIR/sshd.service.ActiveState"
-            When call reconcileSSHPolicy
+            When call applySSHPolicy
             The status should be success
             The contents of file "$SSH_MODEL_DIR/sshd.service.ActiveState" should equal inactive
             The contents of file "$SSH_MODEL_DIR/sshd.service.UnitFileState" should equal disabled
@@ -863,7 +863,7 @@ PubkeyAuthentication no"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/ssh.service.ActiveState"
                 cat "$SSH_MODEL_DIR/ssh.service.UnitFileState"
                 cat "$SSH_MODEL_DIR/ssh.socket.UnitFileState"
@@ -881,7 +881,7 @@ PubkeyAuthentication no"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call remove_distinct_services_block
             The status should be success
@@ -900,7 +900,7 @@ PubkeyAuthentication no"
                 printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call remove_masked_service_block
             The status should be success
@@ -913,7 +913,7 @@ PubkeyAuthentication no"
             disable_then_unspecified() {
                 disableSSH
                 DISABLE_SSH=false
-                reconcileSSHPolicy
+                applySSHPolicy
                 systemctl start sshd.service
                 cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
             }
@@ -937,7 +937,7 @@ PubkeyAuthentication no"
                 printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call restore_externally_masked
             The status should equal 172
@@ -960,7 +960,7 @@ PubkeyAuthentication no"
             DISABLE_SSH=false
             SHOULD_RESTORE_SSH=true
             printf masked > "$SSH_MODEL_DIR/sshd.service.LoadState"
-            When call reconcileSSHPolicy
+            When call applySSHPolicy
             The status should be success
             The contents of file "$SSH_MODEL_DIR/sshd.service.LoadState" should equal masked
             The file "$SSH_TEST_ROOT/activation-commands" should not be exist
@@ -974,7 +974,7 @@ PubkeyAuthentication no"
                 printf enabled > "$SSH_MODEL_DIR/sshd.service.UnitFileState"
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call restore_with_missing_record
             The status should equal 172
@@ -1005,7 +1005,7 @@ PubkeyAuthentication no"
                 printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call remove_unrecorded_migration_block
             The status should be success
@@ -1022,7 +1022,7 @@ PubkeyAuthentication no"
                 printf enabled > "$SSH_MODEL_DIR/sshd.socket.UnitFileState"
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call restore_invalid_record
             The status should equal 172
@@ -1049,7 +1049,7 @@ PubkeyAuthentication no"
                 disableSSH
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/ssh.socket.ActiveState"
                 cat "$SSH_MODEL_DIR/ssh.service.UnitFileState"
             }
@@ -1067,7 +1067,7 @@ PubkeyAuthentication no"
                 [ "$(cat "$SSH_MODEL_DIR/sshd.socket.ActiveState")" = inactive ] || return 1
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/sshd.socket.ActiveState"
                 cat "$SSH_MODEL_DIR/sshd.service.UnitFileState"
             }
@@ -1082,7 +1082,7 @@ PubkeyAuthentication no"
                 FAIL_COMMAND="start sshd.service"
                 DISABLE_SSH=false
                 SHOULD_RESTORE_SSH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call fail_restore
             The status should equal 172
@@ -1106,7 +1106,7 @@ PubkeyAuthentication no"
                 DISABLE_SSH=false
                 DISABLE_PUBKEY_AUTH=true
                 EXPECTED_PUBKEY=no
-                reconcileSSHPolicy
+                applySSHPolicy
                 cat "$SSH_MODEL_DIR/sshd.service.ActiveState"
             }
             When call restore_entra_auth
@@ -1125,7 +1125,7 @@ PubkeyAuthentication no"
                 DISABLE_SSH=false
                 DISABLE_PUBKEY_AUTH=true
                 EXPECTED_PUBKEY=no
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call remove_unrecorded_entra_block
             The status should be success
@@ -1171,10 +1171,10 @@ PubkeyAuthentication no"
                     DISABLE_SSH=false
                     DISABLE_PUBKEY_AUTH=true
                     EXPECTED_PUBKEY=no
-                    reconcileSSHPolicy
+                    applySSHPolicy
                     [ ! -f "$SSH_POLICY_DIR/disabled" ] || return 1
                     rm -f "$SSH_TEST_ROOT/validation-directory"
-                    reconcileSSHPolicy
+                    applySSHPolicy
                 }
                 When run restore_entra_socket_twice
                 The status should be success
@@ -1196,7 +1196,7 @@ PubkeyAuthentication no"
                 printf active > "$SSH_MODEL_DIR/sshd.socket.ActiveState"
                 DISABLE_SSH=false
                 DISABLE_PUBKEY_AUTH=true
-                reconcileSSHPolicy
+                applySSHPolicy
             }
             When call configure_active_entra_service
             The status should be success
@@ -1233,7 +1233,7 @@ PubkeyAuthentication no"
                     disableSSH
                     DISABLE_SSH=false
                     DISABLE_PUBKEY_AUTH=true
-                    reconcileSSHPolicy
+                    applySSHPolicy
                 }
                 When run fail_owned_entra
                 The status should equal 178
@@ -1276,7 +1276,7 @@ PubkeyAuthentication no"
                     disableSSH
                     DISABLE_SSH=false
                     DISABLE_PUBKEY_AUTH=true
-                    reconcileSSHPolicy
+                    applySSHPolicy
                 }
                 if [ "$SSH_AUTH_FAILURE" = command ]; then
                     expected_error="Effective config evaluation failed"
@@ -1300,7 +1300,7 @@ PubkeyAuthentication no"
 
         It 'gives SSH Disabled precedence over the authentication request'
             DISABLE_PUBKEY_AUTH=true
-            When call reconcileSSHPolicy
+            When call applySSHPolicy
             The status should be success
             The file "$SSH_POLICY_DIR/disabled" should be exist
             The file "$SSH_POLICY_DIR/pubkey-auth" should not be exist
@@ -1310,7 +1310,7 @@ PubkeyAuthentication no"
         It 'enforces Disabled at nodePrep even when basePrep was cached as enabled'
             touch "$SSH_TEST_ROOT/base_prep.complete"
             logs_to_events() {
-                [ "$2" = reconcileSSHPolicy ] || exit 1
+                [ "$2" = applySSHPolicy ] || exit 1
                 "$2"
                 exit "$?"
             }
@@ -1329,7 +1329,7 @@ PubkeyAuthentication no"
                 run_node_prep_ssh_reconciliation
             }
             logs_to_events() {
-                [ "$2" = reconcileSSHPolicy ] || exit 1
+                [ "$2" = applySSHPolicy ] || exit 1
                 "$2"
                 exit "$?"
             }
@@ -1357,14 +1357,14 @@ PubkeyAuthentication no"
                     disableSSH
                     DISABLE_SSH=false
                     DISABLE_PUBKEY_AUTH=true
-                    reconcileSSHPolicy
+                    applySSHPolicy
                     [ ! -f "$SSH_POLICY_DIR/disabled" ] || return 1
                     [ "$(cat "$SSH_MODEL_DIR/sshd.service.ActiveState")" = inactive ] || return 1
                     run_node_prep_ssh_reconciliation
                 }
                 logs_to_events() {
                     case "$2" in
-                        reconcileSSHPolicy|disableSSHPubkeyAuth) "$2" ;;
+                        applySSHPolicy|disableSSHPubkeyAuth) "$2" ;;
                         configureAzureJson) exit 0 ;;
                         *) exit 1 ;;
                     esac

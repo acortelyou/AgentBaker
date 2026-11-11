@@ -201,7 +201,7 @@ function basePrep {
 
     logs_to_events "AKS.CSE.installSecureTLSBootstrapClient" installSecureTLSBootstrapClient
 
-    logs_to_events "AKS.CSE.reconcileSSHPolicy" reconcileSSHPolicy || exit "$?"
+    logs_to_events "AKS.CSE.applySSHPolicy" applySSHPolicy || exit "$?"
 
     # This involves using proxy, log the config before fetching packages
     echo "private egress proxy address is '${PRIVATE_EGRESS_PROXY_ADDRESS}'"
@@ -424,7 +424,7 @@ function nodePrep {
     # Uncached nodes already applied SSH policy in basePrep in this process.
     # Cached PIS nodes must apply their live policy here instead.
     if [ -f /opt/azure/containers/base_prep.complete ]; then
-        logs_to_events "AKS.CSE.reconcileSSHPolicy" reconcileSSHPolicy || exit "$?"
+        logs_to_events "AKS.CSE.applySSHPolicy" applySSHPolicy || exit "$?"
     fi
     logs_to_events "AKS.CSE.configureAzureJson" configureAzureJson
     logs_to_events "AKS.CSE.ensureKubeCACert" ensureKubeCACert
